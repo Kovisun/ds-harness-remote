@@ -161,6 +161,8 @@ export const HARNESS_REMOTE_ALLOWLIST = [
   'session/canOpenWorkspacePath',
   'session/control',
   'session/create',
+  'session/delete',
+  'session/deletion',
   'session/follow',
   'session/fork',
   'session/list',
@@ -283,6 +285,12 @@ const PUBLIC_SCHEDULE_ERRORS: Record<string, string> = {
 
 const allowedEndpoints = new Set<string>(HARNESS_REMOTE_ALLOWLIST)
 
+/** Process-level permanent-deletion hook published by the DSH plugin that owns the route. */
+declare global {
+    // eslint-disable-next-line no-var -- the owning plugin assigns it on the shared global.
+    var __dshSessionDeletion: ((args: Record<string, unknown>) => Promise<unknown>) | undefined
+}
+
 /** Host-side adapter from the encrypted peer channel to the official alpha Gateway carrier. */
 export class HarnessRemoteBridge {
   compactHistoryEnabled = false
@@ -308,6 +316,17 @@ export class HarnessRemoteBridge {
   async call(input: unknown): Promise<TypertRpcResult> {
     const params = callSchema.parse(input) as HarnessRemoteCallParams
     this.assertAllowed(params.endpoint)
+    // Permanent session deletion is owned by a local DSH plugin, not by the Gateway (which has
+    // no delete endpoint). That plugin publishes one process-level hook; a Host without it
+    // keeps reporting the capability as unsupported instead of failing the peer's call.
+    if (params.endpoint === 'session/deletion') {
+        return { ok: true, value: { supported: typeof globalThis.__dshSessionDeletion === 'function', version: 1 } }
+    }
+    if (params.endpoint === 'session/delete') {
+        const handler = globalThis.__dshSessionDeletion
+        if (typeof handler !== 'function') throw new RpcError('METHOD_NOT_ALLOWED', 'Session deletion is not installed on this Host.')
+        return await handler(requestArgs(params.payload))
+    }
     if (TERMINAL_STREAMS.has(params.endpoint)) throw new RpcError('METHOD_NOT_ALLOWED', 'Use a stream for this terminal endpoint.')
     if (['settings/update', 'settings/replace', 'settings/mutate'].includes(params.endpoint)) {
       const args = requestArgs(params.payload)
